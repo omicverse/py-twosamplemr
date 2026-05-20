@@ -58,6 +58,26 @@ def test_ivw_penalized(obj):
     assert r.penalized and np.isfinite(r.estimate)
 
 
+def test_robust_ivw_egger(obj):
+    # robust variants run and stay finite; robust down-weighting must not
+    # blow the estimate far from the standard fit on outlier-free data
+    ri = mr.mr_ivw(obj, robust=True)
+    re = mr.mr_egger(obj, robust=True)
+    assert ri.robust and np.isfinite(ri.estimate) and np.isfinite(ri.se)
+    assert re.robust and np.isfinite(re.estimate) and np.isfinite(re.intercept)
+    assert abs(ri.estimate - mr.mr_ivw(obj).estimate) < 0.5 * abs(
+        mr.mr_ivw(obj).estimate)
+
+
+def test_robust_rejects_correlated():
+    o = example_inputs()["ldl"]
+    n = o.nsnps
+    oc = mr.mr_input(bx=o.betaX, bxse=o.betaXse, by=o.betaY, byse=o.betaYse,
+                     correlation=np.eye(n))
+    with pytest.raises(ValueError, match="correlated"):
+        mr.mr_ivw(oc, robust=True)
+
+
 def test_ivw_correlated():
     o = example_inputs()["ldl"]
     n = o.nsnps

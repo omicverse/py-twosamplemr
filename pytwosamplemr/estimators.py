@@ -15,7 +15,12 @@ import numpy as np
 from scipy import stats
 
 from ._nmmin import nmmin
-from ._wls import wls_no_intercept, wls_with_intercept
+from ._wls import (
+    rlm_no_intercept,
+    rlm_with_intercept,
+    wls_no_intercept,
+    wls_with_intercept,
+)
 from .core import MRInput, ci_normal, ci_t, egger_bounds
 from .results import (
     CMLResult,
@@ -63,9 +68,8 @@ def mr_ivw(
     """Inverse-variance weighted estimator (port of ``mr_ivw``).
 
     Supports fixed / random effects, the ``penalized`` weighting scheme,
-    and correlated SNPs via ``obj.correlation``.  The ``robust`` variant
-    (which requires R's ``lmrob``) is not ported; passing ``robust=True``
-    raises :class:`NotImplementedError`.
+    correlated SNPs via ``obj.correlation``, and the ``robust`` variant
+    (outlier-robust regression — see :func:`pytwosamplemr._wls.rlm_no_intercept`).
     """
     Bx = obj.betaX
     By = obj.betaY
@@ -78,10 +82,8 @@ def mr_ivw(
         model = "fixed" if nsnps < 4 else "random"
     if rho is not None:
         correl = True
-    if robust:
-        raise NotImplementedError(
-            "robust IVW relies on R's robustbase::lmrob and is not ported."
-        )
+    if robust and correl:
+        raise ValueError("robust=True is not supported with correlated SNPs.")
     if model not in ("random", "fixed"):
         raise ValueError("model must be one of: default, random, fixed.")
     if distribution not in ("normal", "t-dist"):
@@ -138,7 +140,10 @@ def mr_ivw(
                     w = ((Byse ** 2 + By ** 2 * Bxse ** 2 / Bx ** 2
                           - 2 * psi * By * Bxse * Byse / Bx) ** -1
                          * np.minimum(1.0, pw * 20))
-            coef, coef_se, sigma = wls_no_intercept(By, Bx, w)
+            if robust:
+                coef, coef_se, sigma = rlm_no_intercept(By, Bx, w)
+            else:
+                coef, coef_se, sigma = wls_no_intercept(By, Bx, w)
             theta = coef
             if model == "random":
                 se = coef_se / min(sigma, 1.0)
@@ -212,17 +217,14 @@ def mr_egger(
     """MR-Egger regression (port of ``mr_egger``).
 
     Returns the causal estimate together with the directional-pleiotropy
-    intercept and I-squared_GX.  Supports the correlated-SNP variant; the
-    ``robust`` variant (R's ``lmrob``) is not ported.
+    intercept and I-squared_GX.  Supports the correlated-SNP variant and the
+    ``robust`` variant (outlier-robust regression — see
+    :func:`pytwosamplemr._wls.rlm_with_intercept`).
     """
     if len(obj.betaX) < 3:
         raise ValueError("Method requires data on >2 variants.")
     if distribution not in ("normal", "t-dist"):
         raise ValueError("distribution must be one of: normal, t-dist.")
-    if robust:
-        raise NotImplementedError(
-            "robust MR-Egger relies on R's robustbase::lmrob and is not ported."
-        )
 
     By = np.sign(obj.betaX) * obj.betaY
     Bx = np.abs(obj.betaX)
@@ -232,6 +234,8 @@ def mr_egger(
     nsnps = len(Bx)
     if rho is not None:
         correl = True
+    if robust and correl:
+        raise ValueError("robust=True is not supported with correlated SNPs.")
 
     if correl and rho is not None:
         rho_e = rho * np.outer(np.sign(obj.betaX), np.sign(obj.betaX))
@@ -250,6 +254,7 @@ def mr_egger(
         i_sq = float("nan")
     else:
         w = Byse ** -2
+        _fit = rlm_with_intercept if robust else wls_with_intercept
         if penalized:
             base = wls_with_intercept(By, Bx, w)
             pen_w = stats.chi2.sf(
@@ -258,9 +263,9 @@ def mr_egger(
                 df=1,
             )
             r_w = Byse ** -2 * np.minimum(1.0, pen_w * 100)
-            fit = wls_with_intercept(By, Bx, r_w)
+            fit = _fit(By, Bx, r_w)
         else:
-            fit = wls_with_intercept(By, Bx, w)
+            fit = _fit(By, Bx, w)
         sigma = fit["sigma"]
         theta_e = fit["slope"]
         theta_inter = fit["intercept"]

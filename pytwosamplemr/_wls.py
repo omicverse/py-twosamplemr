@@ -11,7 +11,12 @@ from typing import Tuple
 
 import numpy as np
 
-__all__ = ["wls_no_intercept", "wls_with_intercept"]
+__all__ = [
+    "wls_no_intercept",
+    "wls_with_intercept",
+    "rlm_no_intercept",
+    "rlm_with_intercept",
+]
 
 
 def wls_no_intercept(y, x, w) -> Tuple[float, float, float]:
@@ -71,4 +76,71 @@ def wls_with_intercept(y, x, w):
         "slope_p": float(pvals[1]),
         "sigma": float(sigma),
         "resid": resid,
+    }
+
+
+# --------------------------------------------------------------------------
+# Robust variants — functional analogs of R's robustbase::lmrob
+# --------------------------------------------------------------------------
+# R's mr_ivw(robust=TRUE) / mr_egger(robust=TRUE) call ``lmrob`` (an MM
+# estimator: S-estimate initialisation + Tukey-biweight M-step). statsmodels
+# has no MM estimator, so these helpers use its M-estimator ``RLM`` with the
+# Tukey-biweight norm instead. Prior IVW weights ``w`` are folded in with the
+# usual sqrt-weight transform (regress sqrt(w)*y on sqrt(w)*x), so the robust
+# down-weighting acts on the precision-weighted residuals — the same intent
+# as ``lmrob(..., weights = w)``. Estimates are robust-equivalent to R but
+# NOT bit-exact (M-estimator vs MM-estimator). Return contracts match
+# ``wls_no_intercept`` / ``wls_with_intercept`` exactly.
+
+
+def rlm_no_intercept(y, x, w) -> Tuple[float, float, float]:
+    """Robust weighted ``lmrob(y ~ x - 1, weights = w)`` analog.
+
+    Returns ``(coef, coef_se, sigma)`` like :func:`wls_no_intercept`, where
+    ``sigma`` is the robust residual scale and ``coef_se`` the RLM standard
+    error (which embeds ``sigma``, mirroring R's ``summary$coef[1, 2]``).
+    """
+    import statsmodels.api as sm
+
+    y = np.asarray(y, float)
+    x = np.asarray(x, float)
+    w = np.asarray(w, float)
+    sw = np.sqrt(w)
+    fit = sm.RLM(y * sw, (x * sw)[:, None],
+                 M=sm.robust.norms.TukeyBiweight()).fit()
+    return float(fit.params[0]), float(fit.bse[0]), float(fit.scale)
+
+
+def rlm_with_intercept(y, x, w):
+    """Robust weighted ``lmrob(y ~ x, weights = w)`` analog.
+
+    Returns the same dict as :func:`wls_with_intercept` (``intercept`` /
+    ``slope`` / their SEs and p-values / ``sigma`` / ``resid``).
+    """
+    from scipy import stats
+    import statsmodels.api as sm
+
+    y = np.asarray(y, float)
+    x = np.asarray(x, float)
+    w = np.asarray(w, float)
+    n = len(y)
+    sw = np.sqrt(w)
+    X = np.column_stack([np.ones(n), x])
+    fit = sm.RLM(y * sw, X * sw[:, None],
+                 M=sm.robust.norms.TukeyBiweight()).fit()
+    beta = fit.params
+    se = fit.bse
+    sigma = float(fit.scale)
+    df = n - 2
+    tvals = beta / se
+    pvals = 2.0 * stats.t.sf(np.abs(tvals), df=df) if df > 0 else np.full(2, np.nan)
+    return {
+        "intercept": float(beta[0]),
+        "intercept_se": float(se[0]),
+        "intercept_p": float(pvals[0]),
+        "slope": float(beta[1]),
+        "slope_se": float(se[1]),
+        "slope_p": float(pvals[1]),
+        "sigma": sigma,
+        "resid": y - X @ beta,
     }
